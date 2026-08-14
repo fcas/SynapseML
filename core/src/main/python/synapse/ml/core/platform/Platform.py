@@ -5,11 +5,13 @@ from pyspark.sql import DataFrame
 
 PLATFORM_SYNAPSE_INTERNAL = "synapse_internal"
 PLATFORM_SYNAPSE = "synapse"
+PLATFORM_FABRIC_PYTHON = "fabric_python_env"
 PLATFORM_BINDER = "binder"
 PLATFORM_DATABRICKS = "databricks"
 PLATFORM_UNKNOWN = "unknown"
 SECRET_STORE = "mmlspark-build-keys"
 SYNAPSE_PROJECT_NAME = "Microsoft.ProjectArcadia"
+FABRIC_URL = "fabric.microsoft.com"
 
 
 def current_platform():
@@ -26,6 +28,8 @@ def current_platform():
         return PLATFORM_DATABRICKS
     elif os.environ.get("BINDER_LAUNCH_HOST", None) is not None:
         return PLATFORM_BINDER
+    elif FABRIC_URL in os.environ.get("MSNOTEBOOKUTILS_SPARK_TRIDENT_PBIHOST", ""):
+        return PLATFORM_FABRIC_PYTHON
     else:
         return PLATFORM_UNKNOWN
 
@@ -46,13 +50,17 @@ def running_on_databricks():
     return current_platform() is PLATFORM_DATABRICKS
 
 
+def running_on_fabric_python():
+    return current_platform() is PLATFORM_FABRIC_PYTHON
+
+
 def find_secret(secret_name, keyvault):
     try:
         if running_on_synapse():
             from notebookutils.mssparkutils.credentials import getSecret
 
             return getSecret(keyvault, secret_name)
-        elif running_on_synapse_internal():
+        elif running_on_synapse_internal() or running_on_fabric_python():
             from notebookutils.mssparkutils.credentials import getSecret
 
             keyVaultURL = f"https://{keyvault}.vault.azure.net/"

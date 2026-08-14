@@ -7,6 +7,7 @@ import com.microsoft.azure.synapse.ml.logging.SynapseMLLogging
 import org.apache.commons.io.IOUtils
 import org.apache.http.client.config.RequestConfig
 import org.apache.http.client.methods.{CloseableHttpResponse, HttpPost, HttpRequestBase}
+import org.apache.http.entity.BufferedHttpEntity
 import org.apache.http.impl.client.{CloseableHttpClient, HttpClientBuilder}
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager
 import org.apache.spark.injections.UDFUtils
@@ -16,7 +17,7 @@ import org.apache.spark.sql.types.StringType
 
 import scala.concurrent.duration.Duration
 import scala.concurrent.{ExecutionContext, blocking}
-import scala.util.Try
+import scala.util.{Random, Try}
 
 trait Handler {
 
@@ -74,20 +75,26 @@ object HandlingUtils extends SparkLogging {
   private def keepTrying(client: CloseableHttpClient,
                          request: HttpRequestBase,
                          retriesLeft: Array[Int],
-                         e: Throwable): CloseableHttpResponse = {
+                         e: Throwable,
+                         extraCodesToRetry: Set[Int] = Set(),
+                         backoff429Ms: Long = 0): CloseableHttpResponse = {
     if (retriesLeft.isEmpty) {
       throw e
     } else {
       Thread.sleep(retriesLeft.head.toLong)
-      sendWithRetries(client, request, retriesLeft.tail)
+      sendWithRetries(client, request, retriesLeft.tail, extraCodesToRetry, backoff429Ms)
     }
   }
 
+  private val MaxBackoffMs: Long = 60000L // 1 minute cap for 429 backoff
+
   //scalastyle:off cyclomatic.complexity
+  //scalastyle:off method.length
   private[ml] def sendWithRetries(client: CloseableHttpClient,
                                   request: HttpRequestBase,
                                   retriesLeft: Array[Int],
-                                  extraCodesToRetry: Set[Int] = Set()
+                                  extraCodesToRetry: Set[Int] = Set(),
+                                  backoff429Ms: Long = 0
                                  ): CloseableHttpResponse = {
     try {
       val response = client.execute(request)
@@ -98,18 +105,37 @@ object HandlingUtils extends SparkLogging {
         case 201 => true
         case 202 => true
         case 429 =>
-          Option(response.getFirstHeader("Retry-After"))
-            .foreach { h =>
-              logInfo(s"waiting ${h.getValue} on ${
-                request match {
-                  case p: HttpPost => p.getURI + "   " +
-                    Try(IOUtils.toString(p.getEntity.getContent, "UTF-8")).getOrElse("")
-                  case _ => request.getURI
-                }
-              }")
-              Thread.sleep(h.getValue.toLong * 1000)
+          // Inspect body to distinguish capacity errors from transient rate limits.
+          // Guard with Content-Length cap to avoid buffering unexpectedly large payloads.
+          val MaxInspectionBytes = 1024 * 1024L
+          val bodyStr = Option(response.getEntity).flatMap { entity =>
+            val contentLength = entity.getContentLength
+            if (contentLength > MaxInspectionBytes) {
+              None
+            } else {
+              response.setEntity(new BufferedHttpEntity(entity))
+              Option(response.getEntity)
+                .flatMap(e => Try(IOUtils.toString(e.getContent, "UTF-8")).toOption)
             }
-          false
+          }.getOrElse("")
+          if (bodyStr.contains("CapacityLimitExceeded")) {
+            // Fabric capacity-exceeded 429s are NOT transient rate limits —
+            // retrying will not help and causes hangs
+            logWarning(s"Capacity limit exceeded (non-retryable 429) on ${request.getURI}")
+            true
+          } else {
+            Option(response.getFirstHeader("Retry-After"))
+              .foreach { h =>
+                logInfo(s"waiting ${h.getValue} on ${
+                  request match {
+                    case p: HttpPost => p.getURI + "   " +
+                      Try(IOUtils.toString(p.getEntity.getContent, "UTF-8")).getOrElse("")
+                    case _ => request.getURI
+                  }
+                }")
+              }
+            false
+          }
         case code =>
           logWarning(s"got error  $code: ${response.getStatusLine.getReasonPhrase} on ${
             request match {
@@ -129,19 +155,42 @@ object HandlingUtils extends SparkLogging {
       if (dontRetry || retriesLeft.isEmpty) {
         response
       } else {
+        // Retry-After may be delta-seconds (e.g. "120") or an HTTP-date.
+        // Parse as Long; if it's an HTTP-date or otherwise non-numeric, fall back to exponential backoff.
+        // Cap server-provided values to MaxBackoffMs; Retry-After: 0 means "retry immediately" (RFC 7231).
+        val retryAfterMs = if (code == 429) {
+          Option(response.getFirstHeader("Retry-After"))
+            .flatMap(h => Try(h.getValue.toLong * 1000).toOption)
+            .filter(_ >= 0)
+            .map(math.min(_, MaxBackoffMs))
+        } else None
         response.close()
-        Thread.sleep(retriesLeft.head.toLong)
         if (code == 429) { // Do not count rate limiting in number of failures
-          sendWithRetries(client, request, retriesLeft)
+          val baseBackoff = retryAfterMs.getOrElse {
+            // No usable Retry-After header; use exponential backoff
+            val current = math.max(backoff429Ms, retriesLeft.head.toLong)
+            math.min(current * 2, MaxBackoffMs)
+          }
+          // Add jitter (up to 10% of base) to prevent thundering herd
+          val jitter = Random.nextInt(math.max((baseBackoff / 10).toInt, 1))
+          val sleepMs = math.min(baseBackoff + jitter, MaxBackoffMs)
+          val source = if (retryAfterMs.isDefined) "Retry-After header" else "exponential backoff"
+          logInfo(s"429 rate-limited on ${request.getURI}: " +
+            s"sleeping ${sleepMs}ms ($source, jitter=${jitter}ms)")
+          Thread.sleep(sleepMs)
+          sendWithRetries(client, request, retriesLeft, extraCodesToRetry, baseBackoff)
         } else {
-          sendWithRetries(client, request, retriesLeft.tail)
+          Thread.sleep(retriesLeft.head.toLong)
+          sendWithRetries(client, request, retriesLeft.tail, extraCodesToRetry)
         }
       }
     } catch {
-      case e: javax.net.ssl.SSLException => keepTrying(client, request, retriesLeft, e)
-      case e: java.net.SocketTimeoutException => keepTrying(client, request, retriesLeft, e)
+      case e: java.io.IOException =>
+        logError("Encountering a connection error", e)
+        keepTrying(client, request, retriesLeft, e, extraCodesToRetry, backoff429Ms)
     }
   }
+  //scalastyle:on method.length
   //scalastyle:on cyclomatic.complexity
 
   def advanced(retryTimes: Int*)(client: CloseableHttpClient,
@@ -152,16 +201,17 @@ object HandlingUtils extends SparkLogging {
         case r: HttpPost => Try(IOUtils.toString(r.getEntity.getContent, "UTF-8")).getOrElse("")
         case r => r.getURI
       }
-      SynapseMLLogging.logMessage(s"sending $message")
+      SynapseMLLogging.logDebug(s"sending $message")
       val start = System.currentTimeMillis()
       val resp = sendWithRetries(client, req, retryTimes.toArray)
-      SynapseMLLogging.logMessage(s"finished sending (${System.currentTimeMillis() - start}ms) $message")
+      SynapseMLLogging.logMessage(
+        s"finished sending to ${req.getURI} took (${System.currentTimeMillis() - start}ms)")
       val respData = convertAndClose(resp)
       req.releaseConnection()
       respData
     } catch {
-      case e: java.net.SocketTimeoutException =>
-        logWarning(s"Encountered Socket Timeout: ${e.getMessage}")
+      case e: Exception =>
+        logError(s"Encountered Unknown exception while sending payload", e)
         null //scalastyle:ignore null
     }
   }

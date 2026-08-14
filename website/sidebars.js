@@ -33,7 +33,6 @@ module.exports = {
                     items: [
                         "Explore Algorithms/AI Services/Overview",
                         "Explore Algorithms/AI Services/Geospatial Services",
-                        "Explore Algorithms/AI Services/Multivariate Anomaly Detection",
                         "Explore Algorithms/AI Services/Advanced Usage - Async, Batching, and Multi-Key",
                         "Explore Algorithms/AI Services/Quickstart - Analyze Celebrity Quotes",
                         "Explore Algorithms/AI Services/Quickstart - Analyze Text",
@@ -41,7 +40,6 @@ module.exports = {
                         "Explore Algorithms/AI Services/Quickstart - Create Audiobooks",
                         "Explore Algorithms/AI Services/Quickstart - Document Question and Answering with PDFs",
                         "Explore Algorithms/AI Services/Quickstart - Flooding Risk",
-                        "Explore Algorithms/AI Services/Quickstart - Predictive Maintenance",
                     ],
                 },
                 {
@@ -52,6 +50,7 @@ module.exports = {
                         "Explore Algorithms/OpenAI/OpenAI",
                         "Explore Algorithms/OpenAI/Quickstart - OpenAI Embedding",
                         "Explore Algorithms/OpenAI/Quickstart - OpenAI Embedding and GPU based KNN",
+                        "Explore Algorithms/OpenAI/Quickstart - Custom Embeddings and Approximate KNN on GPU",
                         "Explore Algorithms/OpenAI/Quickstart - Understand and Search Forms",
                     ],
                 },
@@ -66,6 +65,9 @@ module.exports = {
                         "Explore Algorithms/Deep Learning/Quickstart - Fine-tune a Vision Classifier",
                         "Explore Algorithms/Deep Learning/Quickstart - ONNX Model Inference",
                         "Explore Algorithms/Deep Learning/Quickstart - Transfer Learn for Image Classification",
+                        "Explore Algorithms/Deep Learning/Quickstart - Apply Phi Model with HuggingFace CausalLM",
+                        "Explore Algorithms/Deep Learning/Quickstart - End-to-end Local RAG with Phi Model",
+                        "Explore Algorithms/Deep Learning/Quickstart - Chat Completion with Azure AI Foundry Model",
                     ],
                 },
                 {

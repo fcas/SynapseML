@@ -189,12 +189,16 @@ trait PyTestFuzzing[S <: PipelineStage] extends TestBase with DataFrameEquality 
     val importPathString = importPath.mkString(".").replaceAllLiterally("com.microsoft.azure.synapse.ml", "synapse.ml")
     val testClass =
       s"""import unittest
-         |from synapsemltest.spark import *
+         |from pyspark.sql import SQLContext
+         |from synapse.ml.core.init_spark import *
          |from $importPathString import $stageName
          |from os.path import join
          |import json
          |import mlflow
          |from pyspark.ml import PipelineModel
+         |
+         |spark = init_spark()
+         |sc = SQLContext(spark.sparkContext)
          |
          |test_data_dir = "${pyTestDataDir(conf).toString.replaceAllLiterally("\\", "\\\\")}"
          |
@@ -472,6 +476,11 @@ trait SerializationFuzzing[S <: PipelineStage with MLWritable] extends TestBase 
 
   def ignoreSerializationFuzzing: Boolean = false
 
+  // When true, serialization tests compare full transformed DataFrames via assertDFEq.
+  // When false, estimators are only executed (fit/transform) and transformers compare only transformSchema.
+  // Set to false for HTTP service suites where transform() may trigger external API calls or be non-deterministic.
+  val compareDataInSerializationTest: Boolean = true
+
   private def testSerializationHelper(path: String,
                                       stage: PipelineStage with MLWritable,
                                       reader: MLReadable[_],
@@ -484,11 +493,17 @@ trait SerializationFuzzing[S <: PipelineStage with MLWritable] extends TestBase 
         case (e1: Estimator[_], e2: Estimator[_]) =>
           val df1 = e1.fit(fitDF).transform(transDF)
           val df2 = e2.fit(fitDF).transform(transDF)
-          assertDFEq(df1, df2)
+          if (compareDataInSerializationTest) {
+            assertDFEq(df1, df2)
+          }
         case (t1: Transformer, t2: Transformer) =>
-          val df1 = t1.transform(transDF)
-          val df2 = t2.transform(transDF)
-          assertDFEq(df1, df2)
+          if (compareDataInSerializationTest) {
+            val df1 = t1.transform(transDF)
+            val df2 = t2.transform(transDF)
+            assertDFEq(df1, df2)
+          } else {
+            assert(t1.transformSchema(transDF.schema) == t2.transformSchema(transDF.schema))
+          }
         case _ => throw new IllegalArgumentException(s"$stage and $loadedStage do not have proper types")
       }
       ()
@@ -557,6 +572,7 @@ trait GetterSetterFuzzing[S <: PipelineStage with Params] extends TestBase with 
     val pipelineStage = getterSetterTestObject().stage.copy(new ParamMap()).asInstanceOf[S]
     val methods = pipelineStage.getClass.getMethods
     pipelineStage.params.foreach { p =>
+      println(s"Testing parameter ${p.name}")
       val getters = methods.filter(_.getName == s"get${p.name.capitalize}").toSeq
       val setters = methods.filter(_.getName == s"set${p.name.capitalize}").toSeq
       val defaultValue = getterSetterParamExample(pipelineStage, p)

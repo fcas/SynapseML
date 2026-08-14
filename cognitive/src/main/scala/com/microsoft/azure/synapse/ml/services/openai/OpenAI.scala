@@ -4,46 +4,61 @@
 package com.microsoft.azure.synapse.ml.services.openai
 
 import com.microsoft.azure.synapse.ml.codegen.GenerationUtils
-import com.microsoft.azure.synapse.ml.fabric.{FabricClient, OpenAIFabricSetting, OpenAITokenLibrary}
+import com.microsoft.azure.synapse.ml.fabric.{FabricClient, OpenAIFabricSetting}
 import com.microsoft.azure.synapse.ml.logging.common.PlatformDetails
-import com.microsoft.azure.synapse.ml.param.ServiceParam
+import com.microsoft.azure.synapse.ml.param.{GlobalKey, GlobalParams, ServiceParam}
 import com.microsoft.azure.synapse.ml.services._
 import org.apache.spark.ml.PipelineModel
+import org.apache.spark.ml.param.{Param, Params}
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.types._
 import spray.json.DefaultJsonProtocol._
 
+import java.util.Locale
 import scala.language.existentials
 
-trait HasPromptInputs extends HasServiceParams {
-  val prompt: ServiceParam[String] = new ServiceParam[String](
-    this, "prompt", "The text to complete", isRequired = false)
+trait HasMessagesInput extends Params {
+  val messagesCol: Param[String] = new Param[String](
+    this, "messagesCol", "The column messages to generate chat completions for," +
+      " in the chat format. This column should have type Array(Struct(role: String, content: String)).")
 
-  def getPrompt: String = getScalarParam(prompt)
+  def getMessagesCol: String = $(messagesCol)
 
-  def setPrompt(v: String): this.type = setScalarParam(prompt, v)
+  def setMessagesCol(v: String): this.type = set(messagesCol, v)
+}
 
-  def getPromptCol: String = getVectorParam(prompt)
+case object OpenAIDeploymentNameKey extends GlobalKey[Either[String, String]]
+case object OpenAIEmbeddingDeploymentNameKey extends GlobalKey[Either[String, String]]
 
-  def setPromptCol(v: String): this.type = setVectorParam(prompt, v)
+private[openai] object OpenAIEndpointUtils {
+  private def stripTrailingSlashes(value: String): String = value.replaceAll("/+$", "")
 
-  val batchPrompt: ServiceParam[Seq[String]] = new ServiceParam[Seq[String]](
-    this, "batchPrompt", "Sequence of prompts to complete", isRequired = false)
+  private def withoutQueryOrFragment(value: String): String = {
+    val stopAt = Seq(value.indexOf("?"), value.indexOf("#")).filter(_ >= 0) match {
+      case Seq() => value.length
+      case indexes => indexes.min
+    }
+    value.take(stopAt)
+  }
 
-  def getBatchPrompt: Seq[String] = getScalarParam(batchPrompt)
+  def appendPath(baseUrl: String, path: String): String = {
+    val separator = if (baseUrl.endsWith("/")) "" else "/"
+    baseUrl + separator + path.stripPrefix("/")
+  }
 
-  def setBatchPrompt(v: Seq[String]): this.type = setScalarParam(batchPrompt, v)
-
-  def getBatchPromptCol: String = getVectorParam(batchPrompt)
-
-  def setBatchPromptCol(v: String): this.type = setVectorParam(batchPrompt, v)
-
+  def isV1BaseUrl(baseUrl: String): Boolean = {
+    stripTrailingSlashes(withoutQueryOrFragment(baseUrl))
+      .toLowerCase(Locale.ROOT)
+      .endsWith("/v1")
+  }
 }
 
 trait HasOpenAISharedParams extends HasServiceParams with HasAPIVersion {
 
   val deploymentName = new ServiceParam[String](
-    this, "deploymentName", "The name of the deployment", isRequired = true)
+    this, "deploymentName", "The name of the deployment", isRequired = false)
+
+  GlobalParams.registerParam(deploymentName, OpenAIDeploymentNameKey)
 
   def getDeploymentName: String = getScalarParam(deploymentName)
 
@@ -66,8 +81,6 @@ trait HasOpenAISharedParams extends HasServiceParams with HasAPIVersion {
 
   def setUserCol(v: String): this.type = setVectorParam(user, v)
 
-  setDefault(apiVersion -> Left("2024-02-01"))
-
 }
 
 trait HasOpenAIEmbeddingParams extends HasOpenAISharedParams with HasAPIVersion {
@@ -88,20 +101,53 @@ trait HasOpenAIEmbeddingParams extends HasOpenAISharedParams with HasAPIVersion 
   }
 }
 
-trait HasOpenAITextParams extends HasOpenAISharedParams {
+case object OpenAITemperatureKey extends GlobalKey[Either[Double, String]]
+case object OpenAISeedKey extends GlobalKey[Either[Int, String]]
+case object OpenAITopPKey extends GlobalKey[Either[Double, String]]
+case object OpenAIVerbosityKey extends GlobalKey[Either[String, String]]
+case object OpenAIReasoningEffortKey extends GlobalKey[Either[String, String]]
+case object OpenAIApiTypeKey extends GlobalKey[String]
 
+// scalastyle:off number.of.methods
+trait HasOpenAITextParams extends HasOpenAISharedParams {
+  @deprecated("Use maxCompletionTokens instead - max_tokens is rejected by reasoning models", "1.0.16")
   val maxTokens: ServiceParam[Int] = new ServiceParam[Int](
     this, "maxTokens",
-    "The maximum number of tokens to generate. Has minimum of 0.",
-    isRequired = false)
+    "The maximum number of tokens to generate. Has minimum of 0." +
+      " Deprecated: use maxCompletionTokens for compatibility with reasoning models.",
+    isRequired = false) {
+    override val payloadName: String = "max_tokens"
+  }
 
+  @deprecated("Use setMaxCompletionTokens instead", "1.0.16")
   def getMaxTokens: Int = getScalarParam(maxTokens)
 
+  @deprecated("Use setMaxCompletionTokens instead", "1.0.16")
   def setMaxTokens(v: Int): this.type = setScalarParam(maxTokens, v)
 
+  @deprecated("Use setMaxCompletionTokensCol instead", "1.0.16")
   def getMaxTokensCol: String = getVectorParam(maxTokens)
 
+  @deprecated("Use setMaxCompletionTokensCol instead", "1.0.16")
   def setMaxTokensCol(v: String): this.type = setVectorParam(maxTokens, v)
+
+  val maxCompletionTokens: ServiceParam[Int] = new ServiceParam[Int](
+    this, "maxCompletionTokens",
+    "The maximum number of completion tokens to generate. Has minimum of 0." +
+      " Works with both reasoning and non-reasoning models." +
+      " Sent as max_completion_tokens for chat completions," +
+      " and max_output_tokens for responses API.",
+    isRequired = false) {
+    override val payloadName: String = "max_completion_tokens"
+  }
+
+  def getMaxCompletionTokens: Int = getScalarParam(maxCompletionTokens)
+
+  def setMaxCompletionTokens(v: Int): this.type = setScalarParam(maxCompletionTokens, v)
+
+  def getMaxCompletionTokensCol: String = getVectorParam(maxCompletionTokens)
+
+  def setMaxCompletionTokensCol(v: String): this.type = setVectorParam(maxCompletionTokens, v)
 
   val temperature: ServiceParam[Double] = new ServiceParam[Double](
     this, "temperature",
@@ -109,6 +155,8 @@ trait HasOpenAITextParams extends HasOpenAISharedParams {
       " Try 0.9 for more creative applications, and 0 (argmax sampling) for ones with a well-defined answer." +
       " We generally recommend using this or `top_p` but not both. Minimum of 0 and maximum of 2 allowed.",
     isRequired = false)
+
+  GlobalParams.registerParam(temperature, OpenAITemperatureKey)
 
   def getTemperature: Double = getScalarParam(temperature)
 
@@ -138,7 +186,11 @@ trait HasOpenAITextParams extends HasOpenAISharedParams {
       " So 0.1 means only the tokens comprising the top 10 percent probability mass are considered." +
       " We generally recommend using this or `temperature` but not both." +
       " Minimum of 0 and maximum of 1 allowed.",
-    isRequired = false)
+    isRequired = false) {
+    override val payloadName: String = "top_p"
+  }
+
+  GlobalParams.registerParam(topP, OpenAITopPKey)
 
   def getTopP: Double = getScalarParam(topP)
 
@@ -167,7 +219,9 @@ trait HasOpenAITextParams extends HasOpenAISharedParams {
       " So for example, if `logprobs` is 10, the API will return a list of the 10 most likely tokens." +
       " If `logprobs` is 0, only the chosen tokens will have logprobs returned." +
       " Minimum of 0 and maximum of 100 allowed.",
-    isRequired = false)
+    isRequired = false) {
+    override val payloadName: String = "logprobs"
+  }
 
   def getLogProbs: Int = getScalarParam(logProbs)
 
@@ -193,7 +247,9 @@ trait HasOpenAITextParams extends HasOpenAISharedParams {
   val cacheLevel: ServiceParam[Int] = new ServiceParam[Int](
     this, "cacheLevel",
     "can be used to disable any server-side caching, 0=no cache, 1=prompt prefix enabled, 2=full cache",
-    isRequired = false)
+    isRequired = false) {
+    override val payloadName: String = "cache_level"
+  }
 
   def getCacheLevel: Int = getScalarParam(cacheLevel)
 
@@ -207,7 +263,9 @@ trait HasOpenAITextParams extends HasOpenAISharedParams {
     this, "presencePenalty",
     "How much to penalize new tokens based on their existing frequency in the text so far." +
       " Decreases the likelihood of the model to repeat the same line verbatim. Has minimum of -2 and maximum of 2.",
-    isRequired = false)
+    isRequired = false) {
+    override val payloadName: String = "presence_penalty"
+  }
 
   def getPresencePenalty: Double = getScalarParam(presencePenalty)
 
@@ -221,7 +279,9 @@ trait HasOpenAITextParams extends HasOpenAISharedParams {
     this, "frequencyPenalty",
     "How much to penalize new tokens based on whether they appear in the text so far." +
       " Increases the likelihood of the model to talk about new topics.",
-    isRequired = false)
+    isRequired = false) {
+    override val payloadName: String = "frequency_penalty"
+  }
 
   def getFrequencyPenalty: Double = getScalarParam(frequencyPenalty)
 
@@ -235,7 +295,9 @@ trait HasOpenAITextParams extends HasOpenAISharedParams {
     this, "bestOf",
     "How many generations to create server side, and display only the best." +
       " Will not stream intermediate progress if best_of > 1. Has maximum value of 128.",
-    isRequired = false)
+    isRequired = false) {
+    override val payloadName: String = "best_of"
+  }
 
   def getBestOf: Int = getScalarParam(bestOf)
 
@@ -245,42 +307,186 @@ trait HasOpenAITextParams extends HasOpenAISharedParams {
 
   def setBestOfCol(v: String): this.type = setVectorParam(bestOf, v)
 
+  val seed: ServiceParam[Int] = new ServiceParam[Int](
+    this, "seed",
+    "If specified, OpenAI will make a best effort to sample deterministically," +
+      " such that repeated requests with the same seed and parameters should return the same result." +
+      " Determinism is not guaranteed, and you should refer to the system_fingerprint response parameter" +
+      " to monitor changes in the backend.",
+    isRequired = false)
+
+  GlobalParams.registerParam(seed, OpenAISeedKey)
+
+  def getSeed: Int = getScalarParam(seed)
+  def setSeed(v: Int): this.type = setScalarParam(seed, v)
+  def getSeedCol: String = getVectorParam(seed)
+  def setSeedCol(v: String): this.type = setVectorParam(seed, v)
+
+  val verbosity: ServiceParam[String] = new ServiceParam[String](
+    this, "verbosity",
+    "Verbosity level hint for the model. Accepts 'low','medium','high' or any user-provided string.",
+    isRequired = false) {
+    override val payloadName: String = "verbosity"
+  }
+
+  GlobalParams.registerParam(verbosity, OpenAIVerbosityKey)
+
+  def getVerbosity: String = getScalarParam(verbosity)
+  def setVerbosity(v: String): this.type = setScalarParam(verbosity, v)
+  def getVerbosityCol: String = getVectorParam(verbosity)
+  def setVerbosityCol(v: String): this.type = setVectorParam(verbosity, v)
+
+  val reasoningEffort: ServiceParam[String] = new ServiceParam[String](
+    this, "reasoningEffort",
+    "Reasoning effort hint for the model. Accepts 'none','minimal','low','medium','high','xhigh' or any user string.",
+    isRequired = false) {
+    override val payloadName: String = "reasoning_effort"
+  }
+
+  GlobalParams.registerParam(reasoningEffort, OpenAIReasoningEffortKey)
+
+  def getReasoningEffort: String = getScalarParam(reasoningEffort)
+  def setReasoningEffort(v: String): this.type = setScalarParam(reasoningEffort, v)
+  def getReasoningEffortCol: String = getVectorParam(reasoningEffort)
+  def setReasoningEffortCol(v: String): this.type = setVectorParam(reasoningEffort, v)
+
+  private[openai] val sharedTextParams: Seq[ServiceParam[_]] = Seq(
+    maxTokens,
+    maxCompletionTokens,
+    temperature,
+    topP,
+    user,
+    n,
+    echo,
+    stop,
+    cacheLevel,
+    presencePenalty,
+    frequencyPenalty,
+    bestOf,
+    logProbs,
+    seed,
+    verbosity,
+    reasoningEffort
+  )
+
   private[ml] def getOptionalParams(r: Row): Map[String, Any] = {
-    Seq(
-      maxTokens,
-      temperature,
-      topP,
-      user,
-      n,
-      echo,
-      stop,
-      cacheLevel,
-      presencePenalty,
-      frequencyPenalty,
-      bestOf
-    ).flatMap(param =>
-      getValueOpt(r, param).map(v => (GenerationUtils.camelToSnake(param.name), v))
-    ).++(Seq(
-      getValueOpt(r, logProbs).map(v => ("logprobs", v))
-    ).flatten).toMap
+    sharedTextParams.flatMap { param =>
+      getValueOpt(r, param).map { value => param.payloadName -> value }
+    }.toMap
+  }
+
+  /** Resolve maxTokens / maxCompletionTokens into a single (wireKey -> value) entry.
+   *  Errors if both are set. Returns an empty map if neither is set. */
+  protected def resolveMaxTokens(params: Map[String, Any],
+                                 wireKey: String): Map[String, Any] = {
+    val hasLegacy = params.contains("max_tokens")
+    val hasModern = params.contains("max_completion_tokens")
+    require(!(hasLegacy && hasModern),
+      "Cannot set both maxTokens (deprecated) and maxCompletionTokens. Use maxCompletionTokens only.")
+    if (hasModern) {
+      (params - "max_completion_tokens").updated(wireKey, params("max_completion_tokens"))
+    } else if (hasLegacy) {
+      (params - "max_tokens").updated(wireKey, params("max_tokens"))
+    } else {
+      params
+    }
   }
 }
+// scalastyle:on number.of.methods
 
-trait HasOpenAICognitiveServiceInput extends HasCognitiveServiceInput {
-  override protected def getCustomAuthHeader(row: Row): Option[String] = {
-    val providedCustomHeader = getValueOpt(row, CustomAuthHeader)
-    if (providedCustomHeader.isEmpty && PlatformDetails.runningOnFabric()) {
-      logInfo("Using Default OpenAI Token On Fabric")
-      Option(OpenAITokenLibrary.getAuthHeader)
-    } else {
-      providedCustomHeader
+trait HasRAIContentFilter {
+  /**
+   * Determines if the content in the output row was filtered by content safety
+   * @param outputRow The output row from the API response
+   * @return true if content was filtered, false otherwise
+   */
+  private[openai] def isContentFiltered(outputRow: Row): Boolean
+
+  /**
+   * Extracts the error/status reason from a filtered output row
+   * @param outputRow The output row from the API response
+   * @return The error reason (e.g., finish_reason or status)
+   */
+  private[openai] def getFilterReason(outputRow: Row): String
+}
+
+trait HasTextOutput {
+  /**
+   * Extract the text content from the output column for this specific API type
+   */
+  private[openai] def getOutputMessageText(outputColName: String): org.apache.spark.sql.Column
+
+  /**
+    * This one is used to convert messages from Rows
+    * in both format of OpenAIMessage or OpenAICompositeMessage
+    * to the format required by OpenAI API as a Map.
+    *
+    * @param messages
+    * @return
+    */
+  private[openai] def encodeMessagesToMap(messages: Seq[Row]): Seq[Map[String, Any]] = {
+    messages.map { row =>
+      val role = row.getAs[String]("role")
+      val contentField = row.schema.fieldIndex("content")
+      val contentType = row.schema.fields(contentField).dataType
+
+      val content = contentType.typeName match {
+        case "string" =>
+          // OpenAIMessage: content is a String
+          row.getAs[String]("content")
+        case "array" =>
+          // OpenAICompositeMessage: content is Seq[Map[String, Any]]
+          val rawContent = row.getAs[Seq[Map[String, Any]]]("content")
+          rawContent.map(_.map { case (k, v) => k.toString -> v })
+        case other =>
+          throw new IllegalArgumentException(s"Unsupported content type: $other")
+      }
+
+      Map(
+        "role" -> role,
+        "content" -> content
+      )
     }
   }
 }
 
+
 abstract class OpenAIServicesBase(override val uid: String) extends CognitiveServicesBase(uid: String)
   with HasOpenAISharedParams with OpenAIFabricSetting {
   setDefault(timeout -> 360.0)
+
+  override def setUrl(value: String): this.type = set(url, value)
+
+  protected[openai] def isOpenAIV1BaseUrl: Boolean =
+    get(url).orElse(getDefault(url)).exists(OpenAIEndpointUtils.isV1BaseUrl)
+
+  protected[openai] def endpointUrl(path: String): String = OpenAIEndpointUtils.appendPath(getUrl, path)
+
+  protected[openai] def withV1DeploymentModel(params: Map[String, Any], row: Row): Map[String, Any] = {
+    if (isOpenAIV1BaseUrl && !params.contains("model")) {
+      params.updated("model", getValue(row, deploymentName))
+    } else {
+      params
+    }
+  }
+
+  private def warnIfV1ApiVersionConfigured(): Unit = {
+    if (isOpenAIV1BaseUrl && (get(apiVersion).nonEmpty || GlobalParams.getParam(apiVersion).nonEmpty)) {
+      logWarning(
+        "apiVersion is ignored when the OpenAI URL is a v1 base URL. " +
+          "Remove apiVersion or use a non-v1 endpoint.")
+    }
+  }
+
+  override protected def getUrlParams: Array[ServiceParam[_]] = {
+    val params = super.getUrlParams
+    if (isOpenAIV1BaseUrl) {
+      warnIfV1ApiVersionConfigured()
+      params.filterNot(_.name == apiVersion.name)
+    } else {
+      params
+    }
+  }
 
   private def usingDefaultOpenAIEndpoint(): Boolean = {
     getUrl == FabricClient.MLWorkloadEndpointML + "/cognitive/openai/"
@@ -288,7 +494,7 @@ abstract class OpenAIServicesBase(override val uid: String) extends CognitiveSer
 
   override protected def getInternalTransformer(schema: StructType): PipelineModel = {
     if (PlatformDetails.runningOnFabric() && usingDefaultOpenAIEndpoint) {
-      getModelStatus(getDeploymentName)
+      assertModelStatus(getDeploymentName)
     }
     super.getInternalTransformer(schema)
   }

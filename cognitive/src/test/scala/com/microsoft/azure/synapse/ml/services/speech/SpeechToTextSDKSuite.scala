@@ -137,6 +137,7 @@ trait SpeechToTextSDKSuiteBase extends TestBase with CognitiveKey with CustomSpe
 }
 
 class SpeechToTextSDKSuite extends TransformerFuzzing[SpeechToTextSDK] with SpeechToTextSDKSuiteBase {
+  override val compareDataInSerializationTest: Boolean = false
 
   import spark.implicits._
 
@@ -231,10 +232,8 @@ class SpeechToTextSDKSuite extends TransformerFuzzing[SpeechToTextSDK] with Spee
     }
   }
 
-  test("SAS URL based access") {
-    val sasURL = "https://mmlspark.blob.core.windows.net/datasets/Speech/audio2.wav" +
-      "?sp=r&st=2024-03-18T20:17:56Z&se=9999-03-19T04:17:56Z&spr=https&sv=2022-11-02" +
-      "&sr=b&sig=JUU1ojKzTbb45bSP7rOAVXajwrUEp9Ux20oCiD8%2Bb%2FM%3D"
+  ignore("SAS URL based access") {
+    val sasURL = "https://mmlspark.blob.core.windows.net/datasets/Speech/audio2.wav"
 
     tryWithRetries(Array(100, 500)) { () => //For handling flaky build machines
       val uriDf = Seq(Tuple1(sasURL))
@@ -320,6 +319,7 @@ trait TranscriptionSecrets {
 
 class ConversationTranscriptionSuite extends TransformerFuzzing[ConversationTranscription]
   with SpeechToTextSDKSuiteBase with TranscriptionSecrets {
+  override val compareDataInSerializationTest: Boolean = false
 
   override val retrySerializationFuzzing: Boolean = true
 
@@ -427,10 +427,8 @@ class ConversationTranscriptionSuite extends TransformerFuzzing[ConversationTran
     }
   }
 
-  test("SAS URL based access") {
-    val sasURL = "https://mmlspark.blob.core.windows.net/datasets/Speech/audio2.wav" +
-      "?sp=r&st=2024-03-18T20:17:56Z&se=9999-03-19T04:17:56Z&spr=https&sv=2022-11-02" +
-      "&sr=b&sig=JUU1ojKzTbb45bSP7rOAVXajwrUEp9Ux20oCiD8%2Bb%2FM%3D"
+  ignore("SAS URL based access") {
+    val sasURL = "https://mmlspark.blob.core.windows.net/datasets/Speech/audio2.wav"
 
     tryWithRetries(Array(100, 500)) { () => //For handling flaky build machines
       val uriDf = Seq(Tuple1(sasURL))

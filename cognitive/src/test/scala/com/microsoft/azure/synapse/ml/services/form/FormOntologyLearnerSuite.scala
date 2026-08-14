@@ -8,9 +8,10 @@ import org.apache.spark.SparkException
 import org.apache.spark.ml.util.MLReadable
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.types.{ArrayType, DoubleType, StringType, StructType}
-import org.scalactic.Equality
 
 class FormOntologyLearnerSuite extends EstimatorFuzzing[FormOntologyLearner] with FormRecognizerUtils {
+  override val compareDataInSerializationTest: Boolean = false
+
 
   import spark.implicits._
 
@@ -26,9 +27,9 @@ class FormOntologyLearnerSuite extends EstimatorFuzzing[FormOntologyLearner] wit
     .setOutputCol("unified_ontology")
 
   lazy val urlDF: DataFrame = Seq(
-    "https://mmlsparkdemo.blob.core.windows.net/ignite2021/forms/2017/Invoice115991.pdf",
-    "https://mmlsparkdemo.blob.core.windows.net/ignite2021/forms/2018/Invoice119554.pdf",
-    "https://mmlsparkdemo.blob.core.windows.net/ignite2021/forms/2009/Invoice12241.pdf"
+    "https://mmlspark.blob.core.windows.net/publicwasb/form_test/Invoice115991.pdf",
+    "https://mmlspark.blob.core.windows.net/publicwasb/form_test/Invoice119554.pdf",
+    "https://mmlspark.blob.core.windows.net/publicwasb/form_test/Invoice12241.pdf"
   ).toDF("url")
 
   lazy val tableUrlDF: DataFrame = Seq(
@@ -88,14 +89,6 @@ class FormOntologyLearnerSuite extends EstimatorFuzzing[FormOntologyLearner] wit
         .dataType.asInstanceOf[ArrayType].elementType.asInstanceOf[StructType].fieldNames.toSet ===
         targetSchema("Items").dataType.asInstanceOf[ArrayType].elementType.asInstanceOf[StructType].fieldNames.toSet)
     assert(newDF.select("unified_ontology.*").collect().head.getAs[Double]("TotalTax") === 67.13)
-  }
-
-  override def assertDFEq(df1: DataFrame, df2: DataFrame)(implicit eq: Equality[DataFrame]): Unit = {
-    def prep(df: DataFrame) = {
-      df.select("url", "unified_ontology.SubTotal")
-    }
-
-    super.assertDFEq(prep(df1), prep(df2))(eq)
   }
 
   override def testObjects(): Seq[TestObject[FormOntologyLearner]] =

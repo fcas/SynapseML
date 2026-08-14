@@ -41,7 +41,10 @@ case class RequiredErrorFields(errorType: String,
   def toMap: Map[String, String] = {
     Map(
       "errorType" -> errorType,
-      "errorMessage" -> errorType
+      // Exception.getMessage is null for exceptions constructed without one
+      // (e.g. new NullPointerException). spray-json's JsString rejects null,
+      // so serializing the payload would throw and mask the original error.
+      "errorMessage" -> Option(errorMessage).getOrElse("")
     )
   }
 }
@@ -88,6 +91,7 @@ object SynapseMLLogging extends Logging {
     logInfo(SASScrubber.scrub(message))
   }
 
+  override def logDebug(msg: => String): Unit = super.logDebug(SASScrubber.scrub(msg))
 }
 
 trait SynapseMLLogging extends Logging {
@@ -128,8 +132,7 @@ trait SynapseMLLogging extends Logging {
       Future {
         logToCertifiedEvents(
           info("libraryName"),
-          featureName.get,
-          info -- Seq("libraryName", "method")
+          featureName.get
         )
       }.failed.map {
         case e: Exception => logErrorBase("certifiedEventLogging", e)

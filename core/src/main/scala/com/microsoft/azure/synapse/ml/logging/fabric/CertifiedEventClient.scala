@@ -20,8 +20,7 @@ object CertifiedEventClient {
 
   private[ml] def logToCertifiedEvents(featureName: String,
                                        activityName: String,
-                                       attributes: Map[String, String]): Unit = {
-
+                                       attributes: Map[String, String] = Map.empty): Unit = {
     if (runningOnFabric) {
       val payload =
         s"""{

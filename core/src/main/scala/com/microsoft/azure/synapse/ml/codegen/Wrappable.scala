@@ -152,11 +152,29 @@ trait PythonWrappable extends BaseWrappable {
           |""".stripMargin
     // scalastyle:off line.size.limit
     p match {
-      case _: ServiceParam[_] =>
+      case sp: ServiceParam[_] =>
         s"""|def set$capName(self, value):
             |${indent(docString, 1)}
             |    if isinstance(value, list):
             |        value = SparkContext._active_spark_context._jvm.com.microsoft.azure.synapse.ml.param.ServiceParam.toSeq(value)
+            |    elif isinstance(value, dict):
+            |        # Recursively convert Python dict/list to Java LinkedHashMap/ArrayList to preserve order
+            |        sc = SparkContext._active_spark_context
+            |        jvm = sc._jvm
+            |        def _convert(val):
+            |            if isinstance(val, dict):
+            |                jmap = jvm.java.util.LinkedHashMap()
+            |                for k, v in val.items():
+            |                    jmap.put(k, _convert(v))
+            |                return jmap
+            |            elif isinstance(val, list):
+            |                jlist = jvm.java.util.ArrayList()
+            |                for it in val:
+            |                    jlist.add(_convert(it))
+            |                return jlist
+            |            else:
+            |                return val
+            |        value = jvm.com.microsoft.azure.synapse.ml.param.ServiceParam.toMap(_convert(value))
             |    self._java_obj = self._java_obj.set$capName(value)
             |    return self
             |
@@ -285,6 +303,23 @@ trait PythonWrappable extends BaseWrappable {
 
   }
 
+  protected def pySetParamsFunc: String = {
+    s"""|@keyword_only
+        |def setParams(
+        |    self,
+        |${indent(pyParamsArgs, 1)}
+        |    ):
+        |    "\""
+        |    Set the (keyword only) parameters
+        |    "\""
+        |    if hasattr(self, "_input_kwargs"):
+        |        kwargs = self._input_kwargs
+        |    else:
+        |        kwargs = self.__init__._input_kwargs
+        |    return self._set(**kwargs)
+        |""".stripMargin
+  }
+
   //scalastyle:off method.length
   protected def pythonClass(): String = {
     s"""|$copyrightLines
@@ -316,19 +351,7 @@ trait PythonWrappable extends BaseWrappable {
         |
         |${indent(pyInitFunc(), 1)}
         |
-        |    @keyword_only
-        |    def setParams(
-        |        self,
-        |${indent(pyParamsArgs, 2)}
-        |        ):
-        |        "\""
-        |        Set the (keyword only) parameters
-        |        "\""
-        |        if hasattr(self, \"_input_kwargs\"):
-        |            kwargs = self._input_kwargs
-        |        else:
-        |            kwargs = self.__init__._input_kwargs
-        |        return self._set(**kwargs)
+        |${indent(pySetParamsFunc, 1)}
         |
         |    @classmethod
         |    def read(cls):

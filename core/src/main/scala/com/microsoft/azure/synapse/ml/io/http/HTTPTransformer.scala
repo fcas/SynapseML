@@ -7,13 +7,13 @@ import com.microsoft.azure.synapse.ml.codegen.Wrappable
 import com.microsoft.azure.synapse.ml.core.contracts.{HasInputCol, HasOutputCol}
 import com.microsoft.azure.synapse.ml.io.http.HandlingUtils.HandlerFunc
 import com.microsoft.azure.synapse.ml.logging.{FeatureNames, SynapseMLLogging}
-import com.microsoft.azure.synapse.ml.param.UDFParam
+import com.microsoft.azure.synapse.ml.param.{GlobalKey, GlobalParams, UDFParam}
 import org.apache.http.impl.client.CloseableHttpClient
 import org.apache.spark.injections.UDFUtils
 import org.apache.spark.ml.param._
 import org.apache.spark.ml.util.Identifiable
 import org.apache.spark.ml.{ComplexParamsReadable, ComplexParamsWritable, Transformer}
-import org.apache.spark.sql.catalyst.encoders.RowEncoder
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Dataset, Row}
@@ -76,9 +76,13 @@ trait ConcurrencyParams extends Wrappable {
   setDefault(concurrency -> 1, timeout -> 60.0)
 }
 
+case object URLKey extends GlobalKey[String]
+
 trait HasURL extends Params {
 
   val url: Param[String] = new Param[String](this, "url", "Url of the service")
+
+  GlobalParams.registerParam(url, URLKey)
 
   /** @group getParam */
   def getUrl: String = $(url)
@@ -118,7 +122,7 @@ class HTTPTransformer(val uid: String)
   override def transform(dataset: Dataset[_]): DataFrame = {
     logTransform[DataFrame]({
       val df = dataset.toDF()
-      val enc = RowEncoder(transformSchema(df.schema))
+      val enc = ExpressionEncoder(transformSchema(df.schema))
       val colIndex = df.schema.fieldNames.indexOf(getInputCol)
       val fromRow = HTTPRequestData.makeFromRowConverter
       val toRow = HTTPResponseData.makeToRowConverter
